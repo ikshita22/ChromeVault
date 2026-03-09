@@ -4,16 +4,275 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ChromeVault</title>
+  <style>
+    body {
+      font-family: monospace;
+      background: #f5f5f5;
+      color: #222;
+      max-width: 460px;
+      margin: 60px auto;
+      padding: 0 20px;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+
+    .sub {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 32px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 5px;
+      color: #444;
+    }
+
+    input[type="password"],
+    input[type="text"] {
+      width: 100%;
+      padding: 9px 10px;
+      font-family: monospace;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      margin-bottom: 12px;
+      background: #fff;
+      box-sizing: border-box;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #888;
+    }
+
+    button {
+      font-family: monospace;
+      font-size: 13px;
+      padding: 8px 16px;
+      border: 1px solid #aaa;
+      border-radius: 3px;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    button:hover { background: #eee; }
+
+    button.primary {
+      background: #222;
+      color: #fff;
+      border-color: #222;
+    }
+
+    button.primary:hover { background: #444; }
+
+    button.danger {
+      color: #c00;
+      border-color: #c00;
+      font-size: 12px;
+    }
+
+    button.danger:hover { background: #fff0f0; }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #ddd;
+      margin: 24px 0;
+    }
+
+    .section h2 {
+      font-size: 13px;
+      font-weight: normal;
+      color: #666;
+      margin-bottom: 14px;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 5px;
+    }
+
+    .file-name {
+      font-size: 11px;
+      color: #888;
+      margin-top: 5px;
+      margin-bottom: 10px;
+    }
+
+    .msg {
+      font-size: 12px;
+      padding: 8px 10px;
+      border-radius: 3px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    .msg.show { display: block; }
+    .msg.ok  { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+    .msg.err { background: #fdecea; color: #c62828; border: 1px solid #ffcdd2; }
+
+    .warning-box {
+      font-size: 12px;
+      background: #fffbe6;
+      border: 1px solid #ffe082;
+      border-radius: 3px;
+      padding: 10px 12px;
+      color: #555;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+
+    .status {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 20px;
+    }
+
+    .status span { color: #2e7d32; }
+
+    .preview-wrap { display: none; margin-top: 12px; }
+    .preview-wrap.show { display: block; }
+    .preview-wrap img {
+      max-width: 100%;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      display: block;
+    }
+    .preview-name {
+      font-size: 11px;
+      color: #888;
+      margin-top: 5px;
+    }
+
+    #setupScreen  { display: none; }
+    #unlockScreen { display: none; }
+    #mainApp      { display: none; }
+  </style>
 </head>
 <body>
 
-  <h1>ChromeVault</h1>
-  // ui 
+  <h1>🔐 ChromeVault</h1>
+  <p class="sub">encrypt photos before saving to google drive</p>
+
+  <!-- ───────────────────────── -->
+  <!-- SETUP (first time only)  -->
+  <!-- ───────────────────────── -->
+  <div id="setupScreen">
+
+    <div class="warning-box">
+      ⚠️ write your passphrase down somewhere safe.
+      if you forget it, your files cannot be recovered.
+    </div>
+
+    <label>create a passphrase</label>
+    <input type="password" id="setupPass1" placeholder="something long and memorable" />
+
+    <label>confirm passphrase</label>
+    <input type="password" id="setupPass2" placeholder="type it again" />
+
+    <button class="primary" onclick="createVault()">Create Vault</button>
+
+    <div class="msg" id="setupMsg"></div>
+
+  </div>
+
+  <!-- ───────────────────────── -->
+  <!-- UNLOCK                   -->
+  <!-- ───────────────────────── -->
+  <div id="unlockScreen">
+
+    <label>enter your passphrase</label>
+    <input type="password" id="unlockPass" placeholder="your passphrase" />
+
+    <button class="primary" onclick="unlockVault()">Unlock</button>
+
+    <div class="msg" id="unlockMsg"></div>
+
+  </div>
+
+  <!-- ───────────────────────── -->
+  <!-- MAIN APP                 -->
+  <!-- ───────────────────────── -->
+  <div id="mainApp">
+
+    <div class="status">vault is <span>unlocked</span></div>
+
+    <!-- encrypt -->
+    <div class="section">
+      <h2>encrypt a photo</h2>
+
+      <input type="file" id="encFileInput" accept="image/*,.zip" onchange="onEncFile(this)" />
+      <div class="file-name" id="encFileName">no file selected</div>
+
+      <button class="primary" id="encBtn" onclick="encryptFile()" disabled>encrypt + download</button>
+
+      <div class="msg" id="encMsg"></div>
+    </div>
+
+    <hr />
+
+    <!-- decrypt -->
+    <div class="section">
+      <h2>decrypt a photo</h2>
+
+      <input type="file" id="decFileInput" accept=".enc" onchange="onDecFile(this)" />
+      <div class="file-name" id="decFileName">no file selected</div>
+
+      <button id="decBtn" onclick="decryptFile()" disabled>decrypt + view</button>
+
+      <div class="msg" id="decMsg"></div>
+
+      <div class="preview-wrap" id="previewWrap">
+        <img id="previewImg" src="" alt="decrypted photo" />
+        <div class="preview-name" id="previewName"></div>
+      </div>
+    </div>
+
+    <hr />
+
+    <button class="danger" onclick="lockVault()">lock vault</button>
+
+  </div>
 
   <script src="argon2-bundled.min.js"></script>
   <script src="jszip.min.js"></script>
   <script>
-    // logic 
+    // logic coming soon
+
+    window.onload = function() {
+      if (localStorage.getItem('vaultReady') === 'true') {
+        document.getElementById('unlockScreen').style.display = 'block';
+      } else {
+        document.getElementById('setupScreen').style.display = 'block';
+      }
+    };
+
+    function onEncFile(input) {
+      if (input.files[0]) {
+        document.getElementById('encFileName').textContent = input.files[0].name;
+        document.getElementById('encBtn').disabled = false;
+      }
+    }
+
+    function onDecFile(input) {
+      if (input.files[0]) {
+        document.getElementById('decFileName').textContent = input.files[0].name;
+        document.getElementById('decBtn').disabled = false;
+      }
+    }
+
+    // placeholders — logic to be added
+    function createVault() {}
+    function unlockVault() {}
+    function lockVault() {}
+    function encryptFile() {}
+    function decryptFile() {}
   </script>
 
 </body>
