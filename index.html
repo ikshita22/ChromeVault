@@ -205,9 +205,9 @@
 
     <!-- encrypt -->
     <div class="section">
-      <h2>encrypt a photo</h2>
+      <h2>encrypt photos</h2>
 
-      <input type="file" id="encFileInput" accept="image/*,.zip" onchange="onEncFile(this)" />
+      <input type="file" id="encFileInput" accept="image/*,.zip" multiple onchange="onEncFile(this)" />
       <div class="file-name" id="encFileName">no file selected</div>
 
       <button class="primary" id="encBtn" onclick="encryptFile()" disabled>encrypt + download</button>
@@ -243,36 +243,330 @@
   <script src="argon2-bundled.min.js"></script>
   <script src="jszip.min.js"></script>
   <script>
-    // logic coming soon
 
-    window.onload = function() {
+    // ─────────────────────────────────────────
+    // STATE
+    // ─────────────────────────────────────────
+    let globalKey         = null;
+    let globalSalt        = null;
+    let currentPassphrase = null;
+    let encFiles          = null;
+    let decFile           = null;
+
+    // ─────────────────────────────────────────
+    // INIT
+    // ─────────────────────────────────────────
+    window.onload = function () {
       if (localStorage.getItem('vaultReady') === 'true') {
-        document.getElementById('unlockScreen').style.display = 'block';
+        show('unlockScreen');
+        document.getElementById('unlockPass').focus();
       } else {
-        document.getElementById('setupScreen').style.display = 'block';
+        show('setupScreen');
+        document.getElementById('setupPass1').focus();
       }
     };
 
+    // ─────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────
+    function show(id) {
+      ['setupScreen', 'unlockScreen', 'mainApp'].forEach(s => {
+        document.getElementById(s).style.display = s === id ? 'block' : 'none';
+      });
+    }
+
+    function showMsg(id, text, type) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.className = 'msg show ' + type;
+    }
+
+    function hideMsg(id) {
+      document.getElementById(id).className = 'msg';
+    }
+
+    function triggerDownload(bytes, filename) {
+      const url = URL.createObjectURL(new Blob([bytes]));
+      const a   = document.createElement('a');
+      a.href     = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // ─────────────────────────────────────────
+    // ARGON2 KEY DERIVATION
+    // ─────────────────────────────────────────
+    async function deriveKey(passphrase, salt) {
+      const result = await argon2.hash({
+        pass:        passphrase,
+        salt:        salt,
+        type:        argon2.ArgonType.Argon2id,
+        hashLen:     32,
+        mem:         65536,
+        time:        3,
+        parallelism: 1
+      });
+
+      return await crypto.subtle.importKey(
+        'raw',
+        result.hash,
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    }
+
+    // ─────────────────────────────────────────
+    // CREATE VAULT
+    // ─────────────────────────────────────────
+    async function createVault() {
+      const p1 = document.getElementById('setupPass1').value;
+      const p2 = document.getElementById('setupPass2').value;
+
+      if (!p1)           return showMsg('setupMsg', 'please enter a passphrase.', 'err');
+      if (p1.length < 8) return showMsg('setupMsg', 'passphrase must be at least 8 characters.', 'err');
+      if (p1 !== p2)     return showMsg('setupMsg', "passphrases don't match.", 'err');
+
+      showMsg('setupMsg', 'setting up vault...', 'ok');
+      document.querySelector('#setupScreen button').disabled = true;
+
+      try {
+        globalSalt        = crypto.getRandomValues(new Uint8Array(16));
+        globalKey         = await deriveKey(p1, globalSalt);
+        currentPassphrase = p1;
+
+        document.getElementById('setupPass1').value = '';
+        document.getElementById('setupPass2').value = '';
+
+        localStorage.setItem('vaultReady', 'true');
+        show('mainApp');
+
+      } catch (e) {
+        showMsg('setupMsg', 'something went wrong. try again.', 'err');
+        document.querySelector('#setupScreen button').disabled = false;
+      }
+    }
+
+    // UNLOCK VAULT
+    
+    async function unlockVault() {
+      const p = document.getElementById('unlockPass').value;
+      if (!p) return showMsg('unlockMsg', 'enter your passphrase.', 'err');
+
+      showMsg('unlockMsg', 'unlocking...', 'ok');
+      document.querySelector('#unlockScreen button').disabled = true;
+
+      try {
+        globalSalt        = crypto.getRandomValues(new Uint8Array(16));
+        globalKey         = await deriveKey(p, globalSalt);
+        currentPassphrase = p;
+
+        document.getElementById('unlockPass').value = '';
+        show('mainApp');
+
+      } catch (e) {
+        showMsg('unlockMsg', 'something went wrong. try again.', 'err');
+        document.querySelector('#unlockScreen button').disabled = false;
+      }
+    }
+
+    // enter key support
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      if (document.getElementById('setupScreen').style.display  === 'block') createVault();
+      if (document.getElementById('unlockScreen').style.display === 'block') unlockVault();
+    });
+
+    // LOCK VAULT
+   
+    function lockVault() {
+      globalKey         = null;
+      globalSalt        = null;
+      currentPassphrase = null;
+      encFiles          = null;
+      decFile           = null;
+
+      document.getElementById('encFileName').textContent = 'no file selected';
+      document.getElementById('decFileName').textContent = 'no file selected';
+      document.getElementById('encBtn').disabled = true;
+      document.getElementById('decBtn').disabled = true;
+      document.getElementById('previewWrap').classList.remove('show');
+      document.getElementById('previewImg').src = '';
+      hideMsg('encMsg');
+      hideMsg('decMsg');
+
+      show('unlockScreen');
+      document.getElementById('unlockPass').focus();
+    }
+
+  
+    // FILE SELECTION
+  
     function onEncFile(input) {
-      if (input.files[0]) {
-        document.getElementById('encFileName').textContent = input.files[0].name;
+      if (input.files.length > 0) {
+        encFiles = input.files;
+        document.getElementById('encFileName').textContent =
+          input.files.length === 1
+            ? input.files[0].name
+            : `${input.files.length} files selected`;
         document.getElementById('encBtn').disabled = false;
+        hideMsg('encMsg');
       }
     }
 
     function onDecFile(input) {
       if (input.files[0]) {
-        document.getElementById('decFileName').textContent = input.files[0].name;
+        decFile = input.files[0];
+        document.getElementById('decFileName').textContent = decFile.name;
         document.getElementById('decBtn').disabled = false;
+        hideMsg('decMsg');
+        document.getElementById('previewWrap').classList.remove('show');
       }
     }
 
-    // placeholders — logic to be added
-    function createVault() {}
-    function unlockVault() {}
-    function lockVault() {}
-    function encryptFile() {}
-    function decryptFile() {}
+
+    // CORE
+    
+    async function encryptBytes(fileBytes, key, salt) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+
+      const encrypted = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        fileBytes
+      );
+
+      const out = new Uint8Array(16 + 12 + encrypted.byteLength);
+      out.set(salt, 0);
+      out.set(iv, 16);
+      out.set(new Uint8Array(encrypted), 28);
+      return out;
+    }
+
+  
+    // ENCRYPT
+ 
+    async function encryptFile() {
+      if (!encFiles || !globalKey) return;
+
+      const btn = document.getElementById('encBtn');
+      btn.disabled    = true;
+      btn.textContent = 'encrypting...';
+      hideMsg('encMsg');
+
+      try {
+        const fileList = Array.from(encFiles);
+        const isSingle = fileList.length === 1 && !fileList[0].name.toLowerCase().endsWith('.zip');
+
+        if (isSingle) {
+          // single image →  download the .enc file directly
+          const bytes = await fileList[0].arrayBuffer();
+          const enc   = await encryptBytes(bytes, globalKey, globalSalt);
+          triggerDownload(enc, fileList[0].name + '.enc');
+          showMsg('encMsg', 'done! save the .enc file to google drive.', 'ok');
+
+        } else {
+          // multiple files or ZIP → collect all .enc files into one zip
+          const outputZip = new JSZip();
+          let count = 0;
+
+          for (const file of fileList) {
+            if (file.name.toLowerCase().endsWith('.zip')) {
+              // extract ZIP and encrypt each file inside
+              const zip     = await JSZip.loadAsync(await file.arrayBuffer());
+              const entries = Object.entries(zip.files).filter(([, f]) => !f.dir);
+
+              for (const [name, entry] of entries) {
+                const bytes = await entry.async('arraybuffer');
+                const enc   = await encryptBytes(bytes, globalKey, globalSalt);
+                outputZip.file(name + '.enc', enc);
+                count++;
+              }
+
+            } else {
+              // regular image
+              const bytes = await file.arrayBuffer();
+              const enc   = await encryptBytes(bytes, globalKey, globalSalt);
+              outputZip.file(file.name + '.enc', enc);
+              count++;
+            }
+          }
+
+          // generate the zip and trigger one single download
+          const zipBlob = await outputZip.generateAsync({ type: 'blob' });
+          const url     = URL.createObjectURL(zipBlob);
+          const a       = document.createElement('a');
+          a.href        = url;
+          a.download    = 'encrypted.zip';
+          a.click();
+          URL.revokeObjectURL(url);
+
+          showMsg('encMsg', `done! ${count} file(s) bundled into encrypted.zip. save it to google drive.`, 'ok');
+        }
+
+      } catch (e) {
+        showMsg('encMsg', 'encryption failed. try again.', 'err');
+        console.error(e);
+      }
+
+      btn.textContent = 'encrypt + download';
+      btn.disabled    = false;
+    }
+
+    // DECRYPT
+
+    async function decryptFile() {
+      if (!decFile) return;
+
+      const btn = document.getElementById('decBtn');
+      btn.disabled    = true;
+      btn.textContent = 'decrypting...';
+      hideMsg('decMsg');
+      document.getElementById('previewWrap').classList.remove('show');
+
+      try {
+        const encBytes = new Uint8Array(await decFile.arrayBuffer());
+
+        const salt    = encBytes.slice(0, 16);
+        const iv      = encBytes.slice(16, 28);
+        const encData = encBytes.slice(28);
+
+        let decrypted;
+
+        // try current session key first
+        try {
+          decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv },
+            globalKey,
+            encData
+          );
+        } catch {
+          // different session
+          if (!currentPassphrase) throw new Error('passphrase not in memory');
+          const reKey = await deriveKey(currentPassphrase, salt);
+          decrypted   = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv },
+            reKey,
+            encData
+          );
+        }
+
+        // show decrypted photo
+        const url = URL.createObjectURL(new Blob([decrypted]));
+        document.getElementById('previewImg').src = url;
+        document.getElementById('previewName').textContent = decFile.name.replace(/\.enc$/, '');
+        document.getElementById('previewWrap').classList.add('show');
+
+      } catch (e) {
+        showMsg('decMsg', 'wrong passphrase or corrupted file.', 'err');
+        console.error(e);
+      }
+
+      btn.textContent = 'decrypt + view';
+      btn.disabled    = false;
+    }
+
   </script>
 
 </body>
